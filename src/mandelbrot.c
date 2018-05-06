@@ -10,10 +10,7 @@
 #define DEFAULT_THRESHOLD      4.0
 #define DEFAULT_MAX_ITERATIONS 255
 
-#define DEFAULT_MIN_RE -2
-#define DEFAULT_MAX_RE  1
-#define DEFAULT_MIN_IM -1
-#define DEFAULT_MAX_IM  1
+#define ZOOM_FACTOR 0.75
 
 struct state {
 	SDL_Window   *window;
@@ -23,14 +20,29 @@ struct state {
 	int quit;
 	int fullscreen;
 	int screen_width, screen_height;
+	
+	// affects transformations from world space to camera space
+	int screen_halfw, screen_halfh;
+	float scale;	
+	float centre_x, centre_y;
 
 	float thresh;
-	float min_re, max_re;
-	float min_im, max_im;
-
 	int maxiter;
 	int curiter;
 };
+
+static void
+zoom ( struct state *s, int dir ) {
+	s->scale *= (dir < 0)? 1.0/ZOOM_FACTOR : ZOOM_FACTOR;
+}
+
+static void
+scroll ( struct state *s, Sint32 xrel, Sint32 yrel ) {
+	float dx = -xrel * s->scale;
+	float dy = -yrel * s->scale;
+	s->centre_x += dx;
+	s->centre_y += dy;
+}
 
 static int
 mandelbrot ( float re, float im, int maxiter, float threshold ) {	
@@ -41,6 +53,7 @@ mandelbrot ( float re, float im, int maxiter, float threshold ) {
 	float u2 = u * u;
 	float v2 = v * v;
 
+	// f_c(n) = z_n^2 + c => z and c have real and complex parts	
 	for (k = 1; k < maxiter; k++) {
 		v = 2 * u * v + im;
 		u = u2 - v2 + re;
@@ -54,10 +67,11 @@ mandelbrot ( float re, float im, int maxiter, float threshold ) {
 
 static Uint32
 colourize ( int k ) {
+	// pretty colours...
 	static Uint32 colours[] = { 
 		0x421E0F, 0x19071A, 0x09012F, 0x040449,
-		0x000764, 0x0C2C8A,	0x1852B1, 0x397DD1,
-		0x86B5E5, 0xD3ECF8,	0xF1E9BF, 0xF8C95F,
+		0x000764, 0x0C2C8A, 0x1852B1, 0x397DD1,
+		0x86B5E5, 0xD3ECF8, 0xF1E9BF, 0xF8C95F,
 		0xFFAA00, 0xCC8000, 0x995700, 0x6A3403,
 	};
 	static size_t num_colours = sizeof(colours)/sizeof(colours[0]);	
@@ -68,15 +82,22 @@ static int
 initialize ( struct state *s ) {
 	// set up some defaults
 	memset( s, 0, sizeof(struct state) );	
+	
 	s->screen_width  = DEFAULT_SCREEN_WIDTH;
 	s->screen_height = DEFAULT_SCREEN_HEIGHT;
-	s->thresh        = DEFAULT_THRESHOLD;
-	s->max_im        = DEFAULT_MAX_IM;
-	s->min_im        = DEFAULT_MIN_IM;
-	s->max_re        = DEFAULT_MAX_RE;
-	s->min_re        = DEFAULT_MIN_RE;
-	s->maxiter       = DEFAULT_MAX_ITERATIONS;
-	s->fullscreen    = 1;
+	s->screen_halfw  = s->screen_width/2;
+	s->screen_halfh  = s->screen_height/2;
+	s->fullscreen    = 0;
+
+	// these make the mandelbrot look nice
+	s->thresh        = DEFAULT_THRESHOLD;	   // thresh when point escapes set
+	s->maxiter       = DEFAULT_MAX_ITERATIONS; // max series length for test
+	
+	// Initial transformations chosen because they will fit full mandelbrot
+	// on screen and position in centre(ish) of window
+	s->scale         = 4.0/s->screen_height; // scale factor from cam to world
+	s->centre_x      = 0.0;                // world space centre x
+	s->centre_y      = 0.0;                    // world space centre y
 
 	// Initialize SDL so we can use it
 	if ( SDL_Init(SDL_INIT_EVERYTHING) < 0 ) {
@@ -84,21 +105,27 @@ initialize ( struct state *s ) {
 		return 0;
 	}
 	
-	int status = SDL_CreateWindowAndRenderer( 
-			s->screen_width, s->screen_height,           // resolution
-			s->fullscreen*SDL_WINDOW_FULLSCREEN_DESKTOP, // toggle fullscreen
-			&s->window, &s->renderer                     // init structs
+	// create a new window and renderer according to settings
+	int status = SDL_CreateWindowAndRenderer(
+			s->screen_width, s->screen_height,              // resolution
+			s->fullscreen? SDL_WINDOW_FULLSCREEN_DESKTOP:0, // toggle fullscreen
+			&s->window, &s->renderer                        // init structs
 	);
 
-	// make sure we were able to create a window
+	// make sure we were able to create a window and renderer
 	if ( status < 0 ) {
 		printf("SDL_CreateWindowAndRenderer : %s\n", SDL_GetError());
 		return 0;
 	}
-
-	// get screen surface so we can do stuff with it in the render function	
+	
+	// configure how the renderer handles screen dimensions
 	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
 	SDL_RenderSetLogicalSize(s->renderer, s->screen_width, s->screen_height);
+
+	SDL_SetWindowTitle(s->window, PROGRAM_NAME);
+
+
+	// create the texture that we will use for rendering
 	s->texture = SDL_CreateTexture(
 		s->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
 		s->screen_width, s->screen_height
@@ -118,26 +145,38 @@ handle_events ( struct state *s ) {
 			case SDL_KEYDOWN:
 				s->quit = e.key.keysym.sym == SDLK_q;
 				break;
+			case SDL_MOUSEWHEEL:
+				if ( e.wheel.y != 0 ) {
+					int flipped = e.wheel.direction != SDL_MOUSEWHEEL_NORMAL;
+					zoom( s, (flipped)? -e.wheel.y : e.wheel.y );
+				}
+				break;
+			case SDL_MOUSEMOTION:
+				if ( (e.motion.state & SDL_BUTTON_LMASK) != 0 ) {					
+					scroll( s, e.motion.xrel, e.motion.yrel );
+				}
+				break;
 		}
 	}
+}
+
+static void
+update ( struct state *s ) {
+	if ( s->curiter < s->maxiter ) { s->curiter++; }
 }
 
 static void
 render ( struct state *s ) {
 	Uint32 pixels[s->screen_width*s->screen_height];
 
-	if ( s->curiter < s->maxiter ) { s->curiter++; }
-
-	float dx = (float) abs(s->max_re-s->min_re)/s->screen_width;
-	float dy = (float) abs(s->max_im-s->min_im)/s->screen_height;
-
-	// do rendering in parallel
-	#pragma omp parallel
-	#pragma omp for
-	for ( int i=0; i< s->screen_height*s->screen_width; i++ ) {		
-		float x = s->min_re + dx*(i%s->screen_width);
-		float y = s->min_im + dy*(i/s->screen_width);
-		int k = mandelbrot( x, y, s->curiter, s->thresh );		
+	// do rendering in parallel	
+	#pragma omp parallel for
+	for ( int i=0; i< s->screen_height*s->screen_width; i++ ) {
+		int camera_x = i%s->screen_width - s->screen_halfw;
+		int camera_y = i/s->screen_width - s->screen_halfh;		
+		float world_x = camera_x*s->scale + s->centre_x;
+		float world_y = camera_y*s->scale + s->centre_y;
+		int k = mandelbrot( world_x, world_y, s->curiter, s->thresh );		
 		pixels[i] = ( k >= s->curiter )? 0 : colourize(k);	
 	}
 
@@ -158,7 +197,7 @@ terminate ( struct state *s ) {
 int
 main ( int argc, char *argv[] ) {
 	struct state s;
-	
+
 	if (!initialize(&s)) {		
 		terminate(&s);
 		return 1;
@@ -166,6 +205,7 @@ main ( int argc, char *argv[] ) {
 
 	while (!s.quit) {
 		handle_events(&s);
+		update(&s);
 		render(&s);
 	}
 
