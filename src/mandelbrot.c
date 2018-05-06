@@ -4,20 +4,33 @@
 
 #define PROGRAM_NAME   "Mandelbrot"
 
-#define SCREEN_WIDTH   800
-#define SCREEN_HEIGHT  600
+#define DEFAULT_SCREEN_WIDTH   800
+#define DEFAULT_SCREEN_HEIGHT  600
 
-#define THRESHOLD      4.0
-#define MAX_ITERATIONS 255
+#define DEFAULT_THRESHOLD      4.0
+#define DEFAULT_MAX_ITERATIONS 255
 
-#define MIN_RE -2
-#define MAX_RE  1
-#define MIN_IM -1
-#define MAX_IM  1
+#define DEFAULT_MIN_RE -2
+#define DEFAULT_MAX_RE  1
+#define DEFAULT_MIN_IM -1
+#define DEFAULT_MAX_IM  1
 
-static SDL_Window  *window;
-static SDL_Surface *surface;
-static int quit;
+struct state {
+	SDL_Window   *window;
+	SDL_Renderer *renderer;
+	SDL_Texture  *texture;
+
+	int quit;
+	int fullscreen;
+	int screen_width, screen_height;
+
+	float thresh;
+	float min_re, max_re;
+	float min_im, max_im;
+
+	int maxiter;
+	int curiter;
+};
 
 static int
 mandelbrot ( float re, float im, int maxiter, float threshold ) {	
@@ -39,134 +52,124 @@ mandelbrot ( float re, float im, int maxiter, float threshold ) {
 	return k;
 }
 
-void
-escape2colour ( int k, int *r, int *g, int *b ) {
-	static unsigned char colours[][3] = { 
-		{  66,  30,  15 },
-		{  25,   7,  26 },
-		{   9,   1,  47 },
-		{   4,   4,  73 },
-		{   0,   7, 100 },
-		{  12,  44, 138 },
-		{  24,  82, 177 },
-		{  57, 125, 209 },
-		{ 134, 181, 229 },
-		{ 211, 236, 248 },
-		{ 241, 233, 191 },
-		{ 248, 201,  95 },
-		{ 255, 170,   0 },
-		{ 204, 128,   0 },
-		{ 153,  87,   0 },
-		{ 106,  52,   3 },
+static Uint32
+colourize ( int k ) {
+	static Uint32 colours[] = { 
+		0x421E0F, 0x19071A, 0x09012F, 0x040449,
+		0x000764, 0x0C2C8A,	0x1852B1, 0x397DD1,
+		0x86B5E5, 0xD3ECF8,	0xF1E9BF, 0xF8C95F,
+		0xFFAA00, 0xCC8000, 0x995700, 0x6A3403,
 	};
 	static size_t num_colours = sizeof(colours)/sizeof(colours[0]);	
-	unsigned char *c = colours[k%num_colours];
-	*r = c[0]; *g = c[1]; *b = c[2];
+	return colours[k%num_colours];
 }
 
 static int
-initialize ( void ) {
-	window  = NULL; // some default values for our static variables
-	surface = NULL;
-	quit    = 0;
+initialize ( struct state *s ) {
+	// set up some defaults
+	memset( s, 0, sizeof(struct state) );	
+	s->screen_width  = DEFAULT_SCREEN_WIDTH;
+	s->screen_height = DEFAULT_SCREEN_HEIGHT;
+	s->thresh        = DEFAULT_THRESHOLD;
+	s->max_im        = DEFAULT_MAX_IM;
+	s->min_im        = DEFAULT_MIN_IM;
+	s->max_re        = DEFAULT_MAX_RE;
+	s->min_re        = DEFAULT_MIN_RE;
+	s->maxiter       = DEFAULT_MAX_ITERATIONS;
+	s->fullscreen    = 1;
 
 	// Initialize SDL so we can use it
 	if ( SDL_Init(SDL_INIT_EVERYTHING) < 0 ) {
 		printf("SDL_Init : %s\n", SDL_GetError());
 		return 0;
 	}
-
-	// create a window
-	window = SDL_CreateWindow ( 
-				PROGRAM_NAME,            // title at top of window
-				SDL_WINDOWPOS_UNDEFINED, // x center on screen
-				SDL_WINDOWPOS_UNDEFINED, // y center on screen
-				SCREEN_WIDTH,            // width
-				SCREEN_HEIGHT,           // height
-				0                        // flags for configuring window
-			);
+	
+	int status = SDL_CreateWindowAndRenderer( 
+			s->screen_width, s->screen_height,           // resolution
+			s->fullscreen*SDL_WINDOW_FULLSCREEN_DESKTOP, // toggle fullscreen
+			&s->window, &s->renderer                     // init structs
+	);
 
 	// make sure we were able to create a window
-	if ( !window ) {
-		printf("SDL_CreateWindow : %s\n", SDL_GetError());
+	if ( status < 0 ) {
+		printf("SDL_CreateWindowAndRenderer : %s\n", SDL_GetError());
 		return 0;
 	}
 
-	// get screen surface so we can do stuff with it in the render function
-	surface = SDL_GetWindowSurface( window );
+	// get screen surface so we can do stuff with it in the render function	
+	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+	SDL_RenderSetLogicalSize(s->renderer, s->screen_width, s->screen_height);
+	s->texture = SDL_CreateTexture(
+		s->renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+		s->screen_width, s->screen_height
+	);
 
 	return 1;
 }
 
 static void
-handle_events ( void ) {
+handle_events ( struct state *s ) {
 	SDL_Event e;
 	while ( SDL_PollEvent(&e) ) {
 		switch ( e.type ) {
-			case SDL_QUIT: quit = 1;				
+			case SDL_QUIT:
+				s->quit = 1;
+				break;
+			case SDL_KEYDOWN:
+				s->quit = e.key.keysym.sym == SDLK_q;
+				break;
 		}
 	}
 }
 
 static void
-render ( void ) {
-	static int iterations = 0;
-	if ( iterations < MAX_ITERATIONS ) { iterations++; }
+render ( struct state *s ) {
+	Uint32 pixels[s->screen_width*s->screen_height];
 
-	float dx = (float) abs(MAX_RE-MIN_RE)/SCREEN_WIDTH;
-	float dy = (float) abs(MAX_IM-MIN_IM)/SCREEN_HEIGHT;
+	if ( s->curiter < s->maxiter ) { s->curiter++; }
 
-	// lock surface so we can directly manipulate pixels
-	SDL_LockSurface( surface );
-	
-	// get pixels and cast to 32 bit ints
-	Uint32 *pixels = surface->pixels;
+	float dx = (float) abs(s->max_re-s->min_re)/s->screen_width;
+	float dy = (float) abs(s->max_im-s->min_im)/s->screen_height;
 
 	// do rendering in parallel
 	#pragma omp parallel
 	#pragma omp for
-	for ( int i=0; i< SCREEN_HEIGHT*SCREEN_WIDTH; i++ ) {
-		int r, g, b;
-		float x = MIN_RE + dx*(i%surface->w);
-		float y = MIN_IM + dy*(i/surface->w);
-		int k = mandelbrot( x, y, iterations, THRESHOLD );
-		
-		if ( k >= iterations ) {
-			r = g = b = 0;
-		} else {
-			escape2colour(k, &r, &g, &b );	
-		}
-
-		pixels[i] = SDL_MapRGB( surface->format, r, g, b );
+	for ( int i=0; i< s->screen_height*s->screen_width; i++ ) {		
+		float x = s->min_re + dx*(i%s->screen_width);
+		float y = s->min_im + dy*(i/s->screen_width);
+		int k = mandelbrot( x, y, s->curiter, s->thresh );		
+		pixels[i] = ( k >= s->curiter )? 0 : colourize(k);	
 	}
 
-	// unlock the surface now that we're done
-	SDL_UnlockSurface( surface );
-
-	// flip the screen buffer
-	SDL_UpdateWindowSurface( window );
+	SDL_UpdateTexture(s->texture, NULL, pixels, s->screen_width*sizeof(Uint32));
+	SDL_RenderClear(s->renderer);
+	SDL_RenderCopy(s->renderer, s->texture, NULL, NULL);
+	SDL_RenderPresent(s->renderer);
 }
 
 static void
-terminate ( void ) {
-	if ( window ) { SDL_DestroyWindow(window); }
+terminate ( struct state *s ) {
+	if ( s->texture )  { SDL_DestroyTexture(s->texture); }
+	if ( s->renderer ) { SDL_DestroyRenderer(s->renderer); }
+	if ( s->window )   { SDL_DestroyWindow(s->window); }
 	SDL_Quit();
 }
 
 int
 main ( int argc, char *argv[] ) {
+	struct state s;
 	
-	if (!initialize()) {		
-		terminate();
+	if (!initialize(&s)) {		
+		terminate(&s);
 		return 1;
 	}
 
-	while (!quit) {
-		handle_events();
-		render();
+	while (!s.quit) {
+		handle_events(&s);
+		render(&s);
 	}
 
-	terminate();
+	terminate(&s);
 
 	return 0;
 }

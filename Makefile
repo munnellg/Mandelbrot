@@ -4,7 +4,7 @@ CC = gcc
 
 LDFLAGS = -lm -lSDL2
 
-CFLAGS = -Wall -g -fopenmp
+CFLAGS = -Wall -fopenmp
 
 TARGET = mandelbrot
 
