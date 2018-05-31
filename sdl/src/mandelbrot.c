@@ -23,10 +23,10 @@ struct state {
 	
 	// affects transformations from world space to camera space
 	int screen_halfw, screen_halfh;
-	float scale;	
-	float centre_x, centre_y;
+	double scale;	
+	double centre_x, centre_y;
 
-	float thresh;
+	double thresh;
 	int maxiter;
 	int curiter;
 };
@@ -38,20 +38,18 @@ zoom ( struct state *s, int dir ) {
 
 static void
 scroll ( struct state *s, Sint32 xrel, Sint32 yrel ) {
-	float dx = -xrel * s->scale;
-	float dy = -yrel * s->scale;
+	double dx = -xrel * s->scale;
+	double dy = -yrel * s->scale;
 	s->centre_x += dx;
 	s->centre_y += dy;
 }
 
 static int
-mandelbrot ( float re, float im, int maxiter, float threshold ) {	
+mandelbrot ( double re, double im, int maxiter, double threshold ) {	
 	int k;
 
-	float u  = 0.0;
-	float v  = 0.0;
-	float u2 = u * u;
-	float v2 = v * v;
+	double u  = 0.0, v  = 0.0;
+	double u2 = u*u, v2 = v*v;
 
 	// f_c(n) = z_n^2 + c => z and c have real and complex parts	
 	for (k = 1; k < maxiter; k++) {
@@ -174,8 +172,8 @@ render ( struct state *s ) {
 	for ( int i=0; i< s->screen_height*s->screen_width; i++ ) {
 		int camera_x = i%s->screen_width - s->screen_halfw;
 		int camera_y = i/s->screen_width - s->screen_halfh;		
-		float world_x = camera_x*s->scale + s->centre_x;
-		float world_y = camera_y*s->scale + s->centre_y;
+		double world_x = camera_x*s->scale + s->centre_x;
+		double world_y = camera_y*s->scale + s->centre_y;
 		int k = mandelbrot( world_x, world_y, s->curiter, s->thresh );		
 		pixels[i] = ( k >= s->curiter )? 0 : colourize(k);	
 	}

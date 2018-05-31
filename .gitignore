@@ -1,1 +1,3 @@
-mandelbrot
+sdl/mandelbrot
+opengl/mandelbrot
+cmd/mandelbrot
